@@ -5,40 +5,10 @@ const Dentist = require('../models/Dentist');
 
 const router = express.Router();
 
-// Configure nodemailer transporter
-let transporter;
-let usingEthereal = false;
-
-(async () => {
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS.replace(/\s+/g, ''),
-      },
-    });
-    console.log('📧 Email configured with Gmail SMTP (' + process.env.EMAIL_USER + ')');
-  } else {
-    const testAccount = await nodemailer.createTestAccount();
-    transporter = nodemailer.createTransport({
-      host: 'smtp.ethereal.email',
-      port: 587,
-      secure: false,
-      auth: {
-        user: testAccount.user,
-        pass: testAccount.pass,
-      },
-    });
-    usingEthereal = true;
-    console.log('📧 Email configured with Ethereal test account (set EMAIL_USER & EMAIL_PASS for real emails)');
-  }
-})();
-
 // POST /api/appointments - Create new appointment
 router.post('/', async (req, res) => {
   try {
-    const { patient_name, email, age, gender, appointment_date, dentist_id } = req.body;
+    const { patient_name, email, age, gender, appointment_date, dentist_id, dentist_name, clinic_name } = req.body;
 
     if (!patient_name || !email || !appointment_date || !dentist_id) {
       return res.status(400).json({ error: 'Missing required fields: patient_name, email, appointment_date, dentist_id' });
@@ -56,13 +26,23 @@ router.post('/', async (req, res) => {
       gender,
       appointment_date,
       dentist_id,
+      dentist_name: dentist_name || dentist.name,
+      clinic_name: clinic_name || dentist.clinic_name,
     });
 
     // Send confirmation email
     let emailPreview = null;
     let emailSent = false;
-    if (transporter) {
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS,
+          },
+        });
+
         const formattedDate = new Date(appointment_date).toLocaleDateString('en-US', {
           weekday: 'long',
           year: 'numeric',
@@ -72,6 +52,7 @@ router.post('/', async (req, res) => {
 
         const senderEmail = process.env.EMAIL_USER || 'noreply@dentbook.com';
 
+        // 1. Send email to the patient
         const info = await transporter.sendMail({
           from: '"DentBook" <' + senderEmail + '>',
           to: email,
@@ -102,13 +83,20 @@ router.post('/', async (req, res) => {
           `,
         });
 
-        emailSent = true;
-        if (usingEthereal) {
-          emailPreview = nodemailer.getTestMessageUrl(info);
-          console.log('📧 Test email sent! Preview:', emailPreview);
-        } else {
-          console.log('📧 Confirmation email sent to:', email);
+        console.log('📧 Confirmation email sent to:', email);
+
+        // 2. Send email to the admin (yourself) as requested
+        if (process.env.EMAIL_USER) {
+          await transporter.sendMail({
+            from: '"DentBook Alerts" <' + senderEmail + '>',
+            to: process.env.EMAIL_USER,
+            subject: 'New Appointment Booked: ' + patient_name,
+            text: `A new appointment was booked!\n\nPatient: ${patient_name}\nEmail: ${email}\nDentist: ${dentist.name}\nClinic: ${dentist.clinic_name}\nDate: ${formattedDate}\n\nPlease check the admin panel for details.`,
+          });
+          console.log('📧 Admin notification sent to:', process.env.EMAIL_USER);
         }
+
+        emailSent = true;
       } catch (emailError) {
         console.error('Failed to send email:', emailError.message);
       }
@@ -142,15 +130,90 @@ router.get('/', async (req, res) => {
       gender: a.gender,
       appointment_date: a.appointment_date,
       created_at: a.createdAt,
-      dentist_name: a.dentist_id?.name || 'Unknown',
-      clinic_name: a.dentist_id?.clinic_name || 'Unknown',
+      dentist_name: a.dentist_name || a.dentist_id?.name || 'Unknown',
+      clinic_name: a.clinic_name || a.dentist_id?.clinic_name || 'Unknown',
       location: a.dentist_id?.location || '',
+      status: a.status || 'Scheduled',
     }));
 
     res.json(mapped);
   } catch (error) {
     console.error('Error fetching appointments:', error);
     res.status(500).json({ error: 'Failed to fetch appointments' });
+  }
+});
+
+// DELETE /api/appointments/:id - Delete an appointment (Admin only typically)
+router.delete('/:id', async (req, res) => {
+  try {
+    const deleted = await Appointment.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+    res.json({ message: 'Appointment deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting appointment:', error);
+    res.status(500).json({ error: 'Failed to delete appointment' });
+  }
+});
+
+// PUT /api/appointments/:id/status - Update Status (Admin)
+router.put('/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const updated = await Appointment.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    if (!updated) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    // Send email about status change
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS && updated.email) {
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: process.env.EMAIL_USER,
+            pass: process.env.EMAIL_PASS,
+          },
+        });
+
+        const senderEmail = process.env.EMAIL_USER || 'noreply@dentbook.com';
+        
+        // 1. Notify the patient
+        await transporter.sendMail({
+          from: '"DentBook" <' + senderEmail + '>',
+          to: updated.email,
+          subject: 'Appointment Status Update: ' + status,
+          html: `
+            <div style="font-family: Arial, sans-serif; padding: 20px;">
+              <h2>Appointment Update</h2>
+              <p>Hello <strong>${updated.patient_name}</strong>,</p>
+              <p>Your appointment with <strong>${updated.dentist_name}</strong> at <strong>${updated.clinic_name}</strong> has been updated.</p>
+              <p>The new status is: <strong style="color: #0d9488">${status}</strong>.</p>
+              <p>Thank you for using DentBook!</p>
+            </div>
+          `,
+        });
+        console.log('📧 Status update email sent to:', updated.email);
+
+        // 2. Notify the admin
+        await transporter.sendMail({
+          from: '"DentBook Alerts" <' + senderEmail + '>',
+          to: process.env.EMAIL_USER,
+          subject: 'Status Changed: ' + updated.patient_name,
+          text: `You just changed the status of ${updated.patient_name}'s appointment to ${status}.`,
+        });
+        console.log('📧 Admin status update sent to:', process.env.EMAIL_USER);
+        
+      } catch (emailErr) {
+        console.error('Failed to send status update email:', emailErr.message);
+      }
+    }
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating appointment status:', error);
+    res.status(500).json({ error: 'Failed to update status' });
   }
 });
 

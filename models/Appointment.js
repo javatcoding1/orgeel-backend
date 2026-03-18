@@ -7,6 +7,9 @@ const appointmentSchema = new mongoose.Schema({
   gender: String,
   appointment_date: String,
   dentist_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Dentist', required: true },
+  dentist_name: String,
+  clinic_name: String,
+  status: { type: String, enum: ['Scheduled', 'Completed', 'Cancelled'], default: 'Scheduled' },
 }, {
   timestamps: true,
 });
