@@ -53,7 +53,7 @@ router.post('/', async (req, res) => {
         const senderEmail = process.env.EMAIL_USER || 'noreply@dentbook.com';
 
         // 1. Send email to the patient
-        const info = await transporter.sendMail({
+        transporter.sendMail({
           from: '"DentBook" <' + senderEmail + '>',
           to: email,
           subject: 'Appointment Confirmed with ' + dentist.name,
@@ -81,20 +81,9 @@ router.post('/', async (req, res) => {
               </div>
             </div>
           `,
-        });
+        }).catch(e => console.error('Failed to send email:', e.message));
 
         console.log('📧 Confirmation email sent to:', email);
-
-        // 2. Send email to the admin (yourself) as requested
-        if (process.env.EMAIL_USER) {
-          await transporter.sendMail({
-            from: '"DentBook Alerts" <' + senderEmail + '>',
-            to: process.env.EMAIL_USER,
-            subject: 'New Appointment Booked: ' + patient_name,
-            text: `A new appointment was booked!\n\nPatient: ${patient_name}\nEmail: ${email}\nDentist: ${dentist.name}\nClinic: ${dentist.clinic_name}\nDate: ${formattedDate}\n\nPlease check the admin panel for details.`,
-          });
-          console.log('📧 Admin notification sent to:', process.env.EMAIL_USER);
-        }
 
         emailSent = true;
       } catch (emailError) {
@@ -180,7 +169,7 @@ router.put('/:id/status', async (req, res) => {
         const senderEmail = process.env.EMAIL_USER || 'noreply@dentbook.com';
         
         // 1. Notify the patient
-        await transporter.sendMail({
+        transporter.sendMail({
           from: '"DentBook" <' + senderEmail + '>',
           to: updated.email,
           subject: 'Appointment Status Update: ' + status,
@@ -193,17 +182,7 @@ router.put('/:id/status', async (req, res) => {
               <p>Thank you for using DentBook!</p>
             </div>
           `,
-        });
-        console.log('📧 Status update email sent to:', updated.email);
-
-        // 2. Notify the admin
-        await transporter.sendMail({
-          from: '"DentBook Alerts" <' + senderEmail + '>',
-          to: process.env.EMAIL_USER,
-          subject: 'Status Changed: ' + updated.patient_name,
-          text: `You just changed the status of ${updated.patient_name}'s appointment to ${status}.`,
-        });
-        console.log('📧 Admin status update sent to:', process.env.EMAIL_USER);
+        }).catch(e => console.error('Failed to send status update email:', e.message));
         
       } catch (emailErr) {
         console.error('Failed to send status update email:', emailErr.message);
